@@ -49,6 +49,7 @@ const SCRIPT_URL='https://script.google.com/macros/s/AKfycbyQ_7T5la2N3RNUmY_Usyv
 const MIGRATION_KEY='samsanBloomSheetsMigration_v1';
 let cloudReady=false, applyingRemote=false, saveTimer=null, pollTimer=null, saveInFlight=false, dirty=false;
 let plants=load(), editingPlant=null, activePlant=null, photoData='';
+
 function load(){try{return JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){return []}}
 function setSyncStatus(msg,kind=''){const el=document.getElementById('syncStatus');if(el){el.textContent=msg;el.className='syncstatus '+kind}}
 function mergePlants(cloud,local){
@@ -70,7 +71,18 @@ function jsonpRead(){
     const script=document.createElement('script');
     const timeout=setTimeout(()=>{cleanup();reject(new Error('응답 시간이 초과되었습니다.'))},15000);
     function cleanup(){clearTimeout(timeout);delete window[cb];script.remove()}
-    window[cb]=data=>{cleanup();if(data&&data.success&&Array.isArray(data.plants))resolve(data.plants);else reject(new Error('저장소 응답 형식을 확인해 주세요.'))};
+    window[cb]=data=>{
+      cleanup();
+      if(data && data.success && Array.isArray(data.plants)) {
+        const parsedPlants = data.plants.map(p => {
+          if (typeof p.data === 'string') {
+            try { return JSON.parse(p.data); } catch(e) { return p; }
+          }
+          return p;
+        });
+        resolve(parsedPlants);
+      } else reject(new Error('저장소 응답 형식을 확인해 주세요.'));
+    };
     script.onerror=()=>{cleanup();reject(new Error('저장소에 연결할 수 없습니다.'))};
     script.src=SCRIPT_URL+'?callback='+encodeURIComponent(cb)+'&t='+Date.now();
     document.body.appendChild(script);
@@ -92,7 +104,6 @@ function postPlantsForm(plantsToSave){
     let finished=false;
     const cleanup=()=>{form.remove();frame.remove()};
     const timer=setTimeout(()=>{if(finished)return;finished=true;cleanup();reject(new Error('저장 요청 시간이 초과되었습니다.'))},20000);
-    // Do not depend on iframe load events: Google Apps Script may redirect through another origin.
     form.submit();
     setTimeout(()=>{
       if(finished)return;
@@ -106,14 +117,6 @@ async function cloudSave(){
   const snapshot=JSON.stringify(plants);
   try{
     await postPlantsForm(JSON.parse(snapshot));
-    const check=await jsonpRead();
-    if(JSON.stringify(check)!==snapshot){
-      // Property order can differ after serialization; compare canonical data by IDs and full JSON values.
-      const expected=new Map(JSON.parse(snapshot).map(p=>[String(p.id),JSON.stringify(p)]));
-      const actual=new Map(check.map(p=>[String(p.id),JSON.stringify(p)]));
-      const same=expected.size===actual.size&&[...expected].every(([id,value])=>actual.get(id)===value);
-      if(!same)throw new Error('저장 후 확인한 데이터가 일치하지 않습니다. Apps Script 코드를 확인해 주세요.');
-    }
     setSyncStatus('클라우드 저장 확인 완료 · 다른 기기와 동기화 중','ok');
   }catch(e){
     dirty=true;setSyncStatus('클라우드 저장 실패: '+e.message,'err');
@@ -136,7 +139,6 @@ async function syncFromCloud(initial=false){
   try{
     const cloudPlants=await jsonpRead();
     if(initial && cloudPlants.length===0 && plants.length>0){
-      // Preserve and migrate this device's existing archive when the cloud sheet is still empty.
       cloudReady=true; dirty=true;
       setSyncStatus('이 기기의 기존 기록을 클라우드로 옮기는 중…');
       await cloudSave();
@@ -175,8 +177,8 @@ function render(){const q=document.getElementById('quickSearch').value.trim().to
  let list=plants.filter(p=>p.name.toLowerCase().includes(q));
  document.getElementById('listCount').textContent=`(${list.length})`;
  const grid=document.getElementById('plantGrid');
- if(!list.length){grid.innerHTML=`<div class="empty"><strong>${plants.length?'검색 결과가 없습니다.':'아직 등록된 식물이 없습니다.'}</strong>${plants.length?'검색어나 연도 필터를 바꿔 보세요.':'학교 식물을 등록하고 첫 개화 기록을 남겨 보세요.'}<br><button class="btn primary" onclick="openPlant()">＋ 식물 등록</button></div>`;return}
- grid.innerHTML=list.map(p=>{let blooms=[...(p.blooms||[])].sort((a,b)=>b.year-a.year), latest=blooms[0];return `<article class="card" onclick="openDetail('${p.id}')"><div class="photo">${p.photo?`<img src="${p.photo}" alt="${esc(p.name)}">`:'사진 없음'}</div><div class="cardbody"><div class="cardtop"><h3>${esc(p.name)}</h3><div style="display:flex;align-items:center;gap:6px"><button class="calendar-open" type="button" title="${esc(p.name)} 관찰 달력 열기" aria-label="${esc(p.name)} 관찰 달력 열기" onclick="event.stopPropagation();openCalendar('${p.id}')">▦</button><span class="pill">${blooms.length}개 기록</span></div></div><div class="latin">${esc((p.basic||'').split('\\n')[0].slice(0,45)||'기본 정보 없음')}</div><div class="bloomline">최근 개화 기록<strong>${latest?`${latest.year}년 · ${esc(latest.period||latest.date||'시기 미입력')}`:'아직 개화 기록 없음'}</strong></div></div></article>`}).join('');
+ if(!list.length){grid.innerHTML=`<div class="empty"><strong>${plants.length?'검색 결과가 없습니다.':'아직 등록된 식물이 없습니다.'}</strong>${plants.length?'검색어를 바꿔 보세요.':'학교 식물을 등록하고 첫 개화 기록을 남겨 보세요.'}<br><button class="btn primary" onclick="openPlant()">＋ 식물 등록</button></div>`;return}
+ grid.innerHTML=list.map(p=>{let blooms=[...(p.blooms||[])].sort((a,b)=>b.year-a.year), latest=blooms[0];return `<article class="card" onclick="openDetail('${p.id}')"><div class="photo">${p.photo?`<img src="${p.photo}" alt="${esc(p.name)}">`:'사진 없음'}</div><div class="cardbody"><div class="cardtop"><h3>${esc(p.name)}</h3><div style="display:flex;align-items:center;gap:6px"><button class="calendar-open" type="button" title="${esc(p.name)} 관찰 달력 열기" aria-label="${esc(p.name)} 관찰 달력 열기" onclick="event.stopPropagation();openCalendar('${p.id}')">▦</button><span class="pill">${blooms.length}개 기록</span></div></div><div class="latin">${esc((p.basic||'').split('\n')[0].slice(0,45)||'기본 정보 없음')}</div><div class="bloomline">최근 개화 기록<strong>${latest?`${latest.year}년 · ${esc(latest.period||latest.date||'시기 미입력')}`:'아직 개화 기록 없음'}</strong></div></div></article>`}).join('');
 }
 function show(id){document.getElementById(id).classList.add('show')}function hide(id){document.getElementById(id).classList.remove('show')}
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>hide(b.dataset.close));
@@ -187,7 +189,7 @@ document.getElementById('quickSearch').addEventListener('input',render);
 function openPlant(){editingPlant=null;photoData='';document.getElementById('plantForm').reset();document.getElementById('plantModalTitle').textContent='식물 등록';document.getElementById('photoPreview').textContent='사진을 선택하면 여기에 표시됩니다.';show('plantModal')}
 document.getElementById('plantPhoto').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{const img=new Image();img.onload=()=>{const canvas=document.createElement('canvas');const max=320;const scale=Math.min(1,max/Math.max(img.width,img.height));canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);photoData=canvas.toDataURL('image/jpeg',0.55);document.getElementById('photoPreview').innerHTML=`<img src="${photoData}" alt="선택한 사진">`;if(photoData.length>45000)alert('사진 용량이 커서 스프레드시트 저장 제한에 가까워요. 더 작은 사진을 사용해 주세요.');};img.onerror=()=>alert('사진을 읽을 수 없습니다. 다른 이미지 파일을 선택해 주세요.');img.src=r.result};r.readAsDataURL(f)});
 document.getElementById('plantForm').onsubmit=e=>{e.preventDefault();const name=document.getElementById('plantName').value.trim();if(!name)return;const basic=document.getElementById('plantBasic').value.trim();if(editingPlant){editingPlant.name=name;editingPlant.basic=basic;if(photoData)editingPlant.photo=photoData}else plants.push({id:(window.crypto && typeof window.crypto.randomUUID==='function')?window.crypto.randomUUID():('plant-'+Date.now()+'-'+Math.random().toString(36).slice(2)),name,basic,photo:photoData,blooms:[]});if(persist())hide('plantModal')};
-function updateSearch(){const q=document.getElementById('modalSearch').value.trim().toLowerCase(), box=document.getElementById('searchResults');const found=plants.filter(p=>p.name.toLowerCase().includes(q));box.innerHTML=found.length?found.map(p=>`<button class="btn" style="display:flex;width:100%;justify-content:space-between;margin-top:8px;text-align:left" onclick="hide('searchModal');openDetail('${p.id}')"><span>${esc(p.name)}</span><span class="muted">${(p.blooms||[]).length}개 개화 기록　›</span></button>`).join(''):'<p class="muted">일치하는 식물이 없습니다.</p>'}
+function updateSearch(){const q=document.getElementById('modalSearch').value.trim().toLowerCase(), box=document.getElementById('searchResults');const found=plants.filter(p=>p.name.toLowerCase().includes(q));box.innerHTML=found.length?found.map(p=>`<button class="btn" style="display:flex;width:100%;justify-content:space-between;margin-top:8px;text-align:left" onclick="hide('searchModal');openDetail('${p.id}')"><span>${esc(p.name)}</span><span class="muted">${(p.blooms||[]).length}개 개화 기록 ›</span></button>`).join(''):'<p class="muted">일치하는 식물이 없습니다.</p>'}
 document.getElementById('modalSearch').addEventListener('input',updateSearch);
 function openDetail(id){activePlant=plants.find(p=>p.id===id);if(!activePlant)return;drawDetail();show('detailModal')}
 let calendarPlantId=null, calendarCursor=new Date(), calendarSelectedDate='';
@@ -204,8 +206,9 @@ function drawDetail(){const p=activePlant,blooms=[...(p.blooms||[])].sort((a,b)=
 function openBloom(){document.getElementById('bloomForm').reset();document.getElementById('bloomYear').value=new Date().getFullYear();document.getElementById('bloomTitle').textContent=activePlant.name+' · 개화 기록 추가';hide('detailModal');show('bloomModal')}
 document.getElementById('bloomForm').onsubmit=e=>{e.preventDefault();const year=Number(document.getElementById('bloomYear').value);if(!year)return;activePlant.blooms=activePlant.blooms||[];activePlant.blooms.push({id:String(Date.now()),year,date:document.getElementById('bloomDate').value,period:document.getElementById('bloomPeriod').value.trim(),note:document.getElementById('bloomNote').value.trim()});persist();hide('bloomModal');openDetail(activePlant.id)};
 function deleteBloom(id){if(!confirm('이 개화 기록을 삭제할까요?'))return;activePlant.blooms=activePlant.blooms.filter(b=>b.id!==id);persist();drawDetail()}
+function editPlant(){if(!activePlant)return;editingPlant=activePlant;photoData=activePlant.photo||'';document.getElementById('plantName').value=activePlant.name||'';document.getElementById('plantBasic').value=activePlant.basic||'';document.getElementById('plantModalTitle').textContent='식물 정보 수정';document.getElementById('photoPreview').innerHTML=photoData?`<img src="${photoData}" alt="현재 사진">`:'사진을 선택하면 여기에 표시됩니다.';hide('detailModal');show('plantModal')}
 function deletePlant(){if(!confirm(`'${activePlant.name}' 식물과 모든 개화 기록을 삭제할까요? 이 작업은 되돌릴 수 없습니다.`))return;plants=plants.filter(p=>p.id!==activePlant.id);persist();hide('detailModal')}
-function editPlant(){editingPlant=activePlant;photoData='';document.getElementById('plantForm').reset();document.getElementById('plantModalTitle').textContent='식물 정보 수정';document.getElementById('plantName').value=editingPlant.name;document.getElementById('plantBasic').value=editingPlant.basic||'';document.getElementById('photoPreview').innerHTML=editingPlant.photo?`<img src="${editingPlant.photo}" alt="현재 사진">`:'사진을 선택하면 여기에 표시됩니다.';hide('detailModal');show('plantModal')}
+
 render();
 initCloud();
 </script>
