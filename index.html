@@ -46,7 +46,7 @@ footer{border-top:1px solid var(--line);color:var(--muted);font-size:12px;paddin
 
 <script>
 const KEY='samsanBloomArchive_v1';
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbx-wRwpOgAhgiPWNBGvcn3brVdf2enufKKLnU9hgtu0NPopybMZhXCMc_F9Iex3rhuSsQ/exec';
+const SCRIPT_URL='https://script.google.com/macros/s/AKfycbx-wRwpOgAhgiPWNBGvcn3brVdf2enufKKLnU9hgtu0NPopybMZhXCMc_F9Iex3rhuSsQ/exec';
 const MIGRATION_KEY='samsanBloomSheetsMigration_v1';
 let cloudReady=false, applyingRemote=false, saveTimer=null, pollTimer=null, saveInFlight=false, dirty=false;
 let plants=load(), editingPlant=null, activePlant=null, photoData='';
@@ -55,11 +55,20 @@ function load(){try{return JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){
 function setSyncStatus(msg,kind=''){const el=document.getElementById('syncStatus');if(el){el.textContent=msg;el.className='syncstatus '+kind}}
 
 function mergePlants(cloud, local){
-  const merged = new Map((cloud || []).map(p => [String(p.id), p]));
+  const merged = new Map((cloud || []).map(p => [String(p.id), {
+    ...p,
+    blooms: Array.isArray(p.blooms) ? p.blooms : [],
+    activities: Array.isArray(p.activities) ? p.activities : []
+  }]));
+
   for(const lp of (local || [])){
     const id = String(lp.id);
     if(!merged.has(id)){
-      merged.set(id, lp);
+      merged.set(id, {
+        ...lp,
+        blooms: Array.isArray(lp.blooms) ? lp.blooms : [],
+        activities: Array.isArray(lp.activities) ? lp.activities : []
+      });
       continue;
     }
     const cp = merged.get(id);
@@ -93,9 +102,11 @@ function jsonpRead(){
           if (typeof p.data === 'string') {
             try { item = JSON.parse(p.data); } catch(e) { item = p; }
           }
-          item.blooms = item.blooms || [];
-          item.activities = item.activities || [];
-          return item;
+          return {
+            ...item,
+            blooms: Array.isArray(item.blooms) ? item.blooms : [],
+            activities: Array.isArray(item.activities) ? item.activities : []
+          };
         });
         resolve(parsedPlants);
       } else reject(new Error('저장소 응답 형식을 확인해 주세요.'));
@@ -173,25 +184,30 @@ async function syncFromCloud(initial=false){
       setSyncStatus('이 기기의 기존 기록을 클라우드로 옮기는 중…');
       await cloudSave();
       localStorage.setItem(MIGRATION_KEY,'1');
-    }else if(initial&&!localStorage.getItem(MIGRATION_KEY)){
-      plants=mergePlants(cloudPlants,plants);
-      localStorage.setItem(KEY,JSON.stringify(plants));render();
-      cloudReady=true;
-      if(JSON.stringify(plants)!==JSON.stringify(cloudPlants)){dirty=true;await cloudSave()}
-      else setSyncStatus('온라인 저장소 연결 완료 · 자동 동기화 중','ok');
-      localStorage.setItem(MIGRATION_KEY,'1');
     }else{
-      const incoming=JSON.stringify(cloudPlants);
-      if(incoming!==JSON.stringify(plants)){
-        applyingRemote=true;plants=cloudPlants;
-        localStorage.setItem(KEY,JSON.stringify(plants));render();refreshOpenDetail();applyingRemote=false;
-        setSyncStatus('다른 기기의 변경 사항을 반영했어요.','ok');
-      }else if(!cloudReady)setSyncStatus('온라인 저장소 연결 완료 · 자동 동기화 중','ok');
-      cloudReady=true;
+      const merged = mergePlants(cloudPlants, plants);
+      const currentSnapshot = JSON.stringify(plants);
+      const mergedSnapshot = JSON.stringify(merged);
+      
+      if(mergedSnapshot !== currentSnapshot){
+        applyingRemote = true;
+        plants = merged;
+        localStorage.setItem(KEY, JSON.stringify(plants));
+        render();
+        refreshOpenDetail();
+        applyingRemote = false;
+        
+        dirty = true;
+        await cloudSave();
+        setSyncStatus('다른 기기의 변경 사항과 동기화 완료', 'ok');
+      } else if(!cloudReady) {
+        setSyncStatus('온라인 저장소 연결 완료 · 자동 동기화 중', 'ok');
+      }
+      cloudReady = true;
     }
   }catch(e){
     cloudReady=false;applyingRemote=false;
-    setSyncStatus('온라인 연결 실패: '+e.message+' Apps Script 배포 권한과 코드를 확인해 주세요.','err');
+    setSyncStatus('온라인 연결 실패: '+e.message,'err');
   }
 }
 
@@ -223,7 +239,28 @@ document.getElementById('quickSearch').addEventListener('input',render);
 
 function openPlant(){editingPlant=null;photoData='';document.getElementById('plantForm').reset();document.getElementById('plantModalTitle').textContent='식물 등록';document.getElementById('photoPreview').textContent='사진을 선택하면 여기에 표시됩니다.';show('plantModal')}
 document.getElementById('plantPhoto').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{const img=new Image();img.onload=()=>{const canvas=document.createElement('canvas');const max=320;const scale=Math.min(1,max/Math.max(img.width,img.height));canvas.width=Math.max(1,Math.round(img.width*scale));canvas.height=Math.max(1,Math.round(img.height*scale));canvas.getContext('2d').drawImage(img,0,0,canvas.width,canvas.height);photoData=canvas.toDataURL('image/jpeg',0.55);document.getElementById('photoPreview').innerHTML=`<img src="${photoData}" alt="선택한 사진">`;if(photoData.length>45000)alert('사진 용량이 커서 스프레드시트 저장 제한에 가까워요. 더 작은 사진을 사용해 주세요.');};img.onerror=()=>alert('사진을 읽을 수 없습니다. 다른 이미지 파일을 선택해 주세요.');img.src=r.result};r.readAsDataURL(f)});
-document.getElementById('plantForm').onsubmit=e=>{e.preventDefault();const name=document.getElementById('plantName').value.trim();if(!name)return;const basic=document.getElementById('plantBasic').value.trim();if(editingPlant){editingPlant.name=name;editingPlant.basic=basic;if(photoData)editingPlant.photo=photoData}else plants.push({id:(window.crypto && typeof window.crypto.randomUUID==='function')?window.crypto.randomUUID():('plant-'+Date.now()+'-'+Math.random().toString(36).slice(2)),name,basic,photo:photoData,blooms:[],activities:[]});if(persist())hide('plantModal')};
+
+document.getElementById('plantForm').onsubmit=e=>{
+  e.preventDefault();
+  const name=document.getElementById('plantName').value.trim();
+  if(!name)return;
+  const basic=document.getElementById('plantBasic').value.trim();
+  if(editingPlant){
+    editingPlant.name=name;
+    editingPlant.basic=basic;
+    if(photoData)editingPlant.photo=photoData;
+  }else{
+    plants.push({
+      id:(window.crypto && typeof window.crypto.randomUUID==='function')?window.crypto.randomUUID():('plant-'+Date.now()+'-'+Math.random().toString(36).slice(2)),
+      name,
+      basic,
+      photo:photoData,
+      blooms:[],
+      activities:[]
+    });
+  }
+  if(persist())hide('plantModal');
+};
 
 function updateSearch(){const q=document.getElementById('modalSearch').value.trim().toLowerCase(), box=document.getElementById('searchResults');const found=plants.filter(p=>p.name.toLowerCase().includes(q));box.innerHTML=found.length?found.map(p=>`<button class="btn" style="display:flex;width:100%;justify-content:space-between;margin-top:8px;text-align:left" onclick="hide('searchModal');openDetail('${p.id}')"><span>${esc(p.name)}</span><span class="muted">${(p.blooms||[]).length}개 개화 기록 ›</span></button>`).join(''):'<p class="muted">일치하는 식물이 없습니다.</p>'}
 document.getElementById('modalSearch').addEventListener('input',updateSearch);
